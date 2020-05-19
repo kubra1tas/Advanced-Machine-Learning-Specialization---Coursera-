@@ -1,0 +1,142 @@
+import tensorflow as tf
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import sys
+import keras_utils
+import tqdm_utils
+
+tf.compat.v1.disable_eager_execution()
+
+
+start_token = " "
+pad_token = "#"
+
+with open('names.txt') as f:
+    names = f.read().split('\n')
+    names = [start_token + name for name in names]
+    #print(names)
+
+print("Number of samples : ", len( names))
+for i in names[::1000]:
+    print(i)
+
+MAX_LENGHT = max(map(len, names))
+print("Maximum lenght : ", MAX_LENGHT)
+plt.title("Sequence lenght distribution")
+plt.hist(list(map(len, names)), bins = 25)
+plt.show()
+
+#TEXT PROCESSING
+
+tokens = set(''.join(names))
+tokens.add(pad_token)
+tokens = list(tokens)
+print(tokens)
+n_tokens = len(tokens)
+
+#Casting everythig from symbols into identifiers
+
+token_to_id = {ch: i for i,ch in enumerate(tokens)} #Creating a token for each letter
+
+names = sorted(names)
+letterCount = 0
+names_ix = (np.zeros([len(names), MAX_LENGHT], dtype=np.int32) + token_to_id[pad_token])
+tmp = 1
+
+def to_matrix(names, max_len = None, pad = token_to_id[pad_token], dtype = np.int32):
+    max_len = max_len or max(map(len, names))
+    names_ix = np.zeros([len(names), max_len], dtype) + pad
+
+    for i in range(len(names)):
+        name_ix = list(map(token_to_id.get, names[i]))
+        names_ix[i, :len(name_ix)] = name_ix
+    '''
+    for i in range(1, len(names)):
+        name_ix = list(map(token_to_id.get, names[i]))
+        letter = name_ix[1]
+        letterCount += 1
+        if letter is not tmp:
+            tmp = name_ix[1]
+            print("Initial starst with :", tokens[tmp], "Numbers of the total names starts with", tokens[tmp], "is : ",
+                  (letterCount), '\n')
+            letterCount = 0
+    '''
+
+    return name_ix
+
+print('\n'.join(names[::1000]))
+print(to_matrix(names[::1000]))
+
+import keras_utils
+from random import sample
+from keras.layers import Dense, concatenate, Embedding
+
+s = keras_utils.reset_tf_session()
+
+
+rnn_num_units = 64 #size of hidden state
+embedding_size = 16 #for characters
+
+embed_x = Embedding(n_tokens, embedding_size)
+get_h_next = Dense(rnn_num_units, activation= 'tanh')
+get_probas = Dense(n_tokens, activation= 'softmax')
+
+def rnn_one_step(x_t, h_t):
+    x_t_emb = embed_x(tf.reshape(x_t, [-1,1]))[:,0] #converting character id into embedding
+    h_next = get_h_next(concatenate([x_t_emb, h_t]))
+    output_probas = get_probas(h_next)
+
+    return output_probas, h_next
+
+
+input_sequence = tf.compat.v1.placeholder(tf.int32, (None, MAX_LENGHT))  # batch of token ids
+batch_size = tf.shape(input_sequence)[0]
+
+predicted_probas = []
+h_prev = tf.zeros([batch_size, rnn_num_units])  # initial hidden state
+
+for t in range(MAX_LENGHT):
+    x_t = input_sequence[:, t]  # column t
+    probas_next, h_next = rnn_one_step(x_t, h_prev)
+
+    h_prev = h_next
+    predicted_probas.append(probas_next)
+
+# combine predicted_probas into [batch, time, n_tokens] tensor
+predicted_probas = tf.transpose(tf.stack(predicted_probas), [1, 0, 2])
+
+# next to last token prediction is not needed
+predicted_probas = predicted_probas[:, :-1, :]
+
+
+#Loss and gradients
+prediction_matrix = tf.reshape(predicted_probas, [-1, n_tokens])
+
+# flatten answers (next tokens) and one-hot encode them
+answer_matrix = tf.one_hot(tf.reshape(input_sequence[:, 1:], [-1]), n_tokens)
+
+
+loss = -tf.reduce_mean(answer_matrix * tf.compat.v1.log(prediction_matrix)) ### YOUR CODE HERE
+
+optimize = tf.compat.v1.train.AdamOptimizer().minimize(loss)
+#Training
+
+s.run(tf.compat.v1.global_variables_initializer())
+batch_size = 32
+history = []
+
+from IPython.display import clear_output
+
+for i in range(100):
+    batch = to_matrix(sample(names, batch_size), max_len = MAX_LENGHT)
+    loss_i, _ = s.run([loss, optimize], {input_sequence: batch})
+
+
+    history.append(loss_i)
+
+    if (i+1)%100 == 0:
+        clear_output(True)
+        plt.plot(history, label = 'loss')
+        plt.legend()
+        plt.show()
